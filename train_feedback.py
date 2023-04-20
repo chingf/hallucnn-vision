@@ -1,6 +1,7 @@
 #########################
 # In this script we train p-EfficientNets on ImageNet
 # We use the pretrained model and only train feedback connections.
+# This uses data parallelization across multiple GPUs.
 #########################
 import torch
 import torchvision.transforms as transforms
@@ -13,8 +14,6 @@ import numpy as np
 
 import os
 import time
-#os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
-#os.environ["CUDA_VISIBLE_DEVICES"]="2"
 
 from timm.models import efficientnet_b0
 from peff_b0 import PEffN_b0SeparateHP_V1
@@ -23,21 +22,24 @@ from peff_b0 import PEffN_b0SeparateHP_V1
 #       Global configs
 ################################################
 
+engram_dir = '/mnt/smb/locker/abbott-locker/hcnn_vision/'
+
 class Args():
 
     def __init__(self):
         self.random_seed = None                    #random_seed for the run
-        self.batchsize = 80                        #batchsize for training
+        self.batchsize = 64                        #batchsize for training
         self.num_workers = 4                       #number of workers
         self.num_epochs = 50                       #number of epochs
         self.start_epoch = 1
 
-        self.log_dir='./runs_train_feedbacks'       #tensorboard logdir
         self.task_name =  'pefficientnet_b0_lr0.001RMProp_with_cosingannealing'       #dir_name
         self.extra_stuff_you_want_to_add_to_tb = 'same_cosine_annealing_with_t0_3'
+        self.log_dir = f'{engram_dir}tensorboard/{self.task_name}/'       #tensorboard logdir
+        self.pth_dir = f'{engram_dir}checkpoints/{self.task_name}/'       #ckpt dir
 
         self.optim_name = 'RMSProp'
-        self.lr = 0.001
+        self.lr = 0.001 * (64/self.batchsize)
         self.weight_decay = 5e-4
         self.ckpt_every = None   #TODO
 
@@ -53,9 +55,8 @@ if args.random_seed:
     np.random.seed(args.random_seed)
     torch.manual_seed(args.random_seed)
 
-if not os.path.exists(args.task_name):
-    print (f'Creating a new dir : {args.task_name}')
-    os.mkdir(args.task_name)
+os.makedirs(args.log_dir, exist_ok=True)
+os.makedirs(args.pth_dir, exist_ok=True)
 
 
 ################################################
@@ -194,7 +195,7 @@ else :
     print ("Training from scratch...")
 
 # summarywriter
-sumwriter = SummaryWriter(f'{args.log_dir}/{args.task_name}', filename_suffix=f'')
+sumwriter = SummaryWriter(args.log_dir, filename_suffix=f'')
 optimizer_text = f"Optimizer   :{args.optim_name}  \n lr          :{optimizer.defaults['lr']} \n batchsize   :{args.batchsize} \n weight_decay:{args.weight_decay} \n {args.extra_stuff_you_want_to_add_to_tb}"
 sumwriter.add_text('Parameters',optimizer_text,0)
 
@@ -213,4 +214,4 @@ for epoch in range(args.start_epoch, args.num_epochs):
             'pcoderweights':getattr(pnet,f"pcoder{pcod_idx+1}").state_dict(),
             'optimizer'    :optimizer.state_dict(),
             'epoch'        :epoch,
-            }, f'{args.task_name}/pnet_pretrained_pc{pcod_idx+1}_{epoch:03d}.pth')
+            }, f'{args.pth_dir}pnet_pretrained_pc{pcod_idx+1}_{epoch:03d}.pth')
