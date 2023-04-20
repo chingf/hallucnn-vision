@@ -4,3 +4,4 @@ checkpoints
 tensorboard
 *.pth
 *.mat
+temp/
