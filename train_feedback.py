@@ -96,7 +96,6 @@ print('Loading val ds')
 val_ds     = ImageNet(data_root, split='val', transform=transform_val)
 val_loader = torch.utils.data.DataLoader(val_ds,  batch_size=args.batchsize, shuffle=True, drop_last=False,num_workers=args.num_workers,pin_memory=True)
 
-
 def train_pcoders(net, epoch, writer,train_loader,verbose=True):
 
     ''' A training epoch '''
