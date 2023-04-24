@@ -63,12 +63,12 @@ class Args():
         self.random_seed = None                    #random_seed for the run
         self.batchsize = 80                        #batchsize for training
         self.num_workers = 4                       #number of workers
-        self.num_epochs = 50                       #number of epochs
+        self.num_epochs = 100                       #number of epochs
         self.num_gpus = 3 
         self.start_epoch = 1
 
-        self.task_name =  'pefficientnet_gaussiannoise'       #dir_name
-        self.extra_stuff_you_want_to_add_to_tb = ' '
+        self.task_name =  'pnet_gaussiannoise2'       #dir_name
+        self.extra_stuff_you_want_to_add_to_tb = ''
         self.log_dir = f'{engram_dir}tensorboard/{self.task_name}/'       #tensorboard logdir
         self.pth_dir = f'{engram_dir}checkpoints/{self.task_name}/'       #ckpt dir
 

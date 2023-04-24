@@ -30,11 +30,11 @@ class Args():
         self.random_seed = None                    #random_seed for the run
         self.batchsize = 64                        #batchsize for training
         self.num_workers = 4                       #number of workers
-        self.num_epochs = 50                       #number of epochs
+        self.num_epochs = 100                       #number of epochs
         self.start_epoch = 1
 
-        self.task_name =  'pefficientnet_b0_lr0.001RMProp_with_cosingannealing'       #dir_name
-        self.extra_stuff_you_want_to_add_to_tb = 'same_cosine_annealing_with_t0_3'
+        self.task_name =  'pnet2'       #dir_name
+        self.extra_stuff_you_want_to_add_to_tb = ''
         self.log_dir = f'{engram_dir}tensorboard/{self.task_name}/'       #tensorboard logdir
         self.pth_dir = f'{engram_dir}checkpoints/{self.task_name}/'       #ckpt dir
 
