@@ -23,7 +23,7 @@ class PhaseShuffle(object):
         ims_shape = ims.shape
         shuff_indices = np.arange(ims_shape[-1]*ims_shape[-2])
         np.random.shuffle(shuff_indices)
-        for c in [1]:
+        for c in [0,1,2]:
             c_vals = ims[c]
             c_shape = c_vals.shape
             c_vals = c_vals.flatten()
@@ -51,7 +51,7 @@ class MagShuffle(object):
         res_shape = res.shape
         shuff_indices = np.arange(res_shape[-1]*res_shape[-2])
         np.random.shuffle(shuff_indices)
-        for c in [1]:
+        for c in [0,1,2]:
             c_vals = res[c]
             c_shape = c_vals.shape
             c_vals = c_vals.flatten()
