@@ -11,8 +11,8 @@ class PhaseShuffle(object):
     r"""
     Shuffles phase info of image
     """
-    def __init__(self):
-        pass
+    def __init__(self, n_c_shuffle=3):
+        self.n_c_shuffle = n_c_shuffle
         
     def __call__(self, tensor):
         
@@ -23,7 +23,11 @@ class PhaseShuffle(object):
         ims_shape = ims.shape
         shuff_indices = np.arange(ims_shape[-1]*ims_shape[-2])
         np.random.shuffle(shuff_indices)
-        for c in [0,1,2]:
+        if self.n_c_shuffle < 3:
+            cs = np.random.choice(3, size=self.n_c_shuffle, replace=False)
+        else:
+            cs = [0,1,2]
+        for c in cs:
             c_vals = ims[c]
             c_shape = c_vals.shape
             c_vals = c_vals.flatten()
@@ -39,8 +43,9 @@ class MagShuffle(object):
     r"""
     Shuffles magnitude info of image
     """
-    def __init__(self):
-        pass
+
+    def __init__(self, n_c_shuffle=3):
+        self.n_c_shuffle = n_c_shuffle
         
     def __call__(self, tensor):
         
@@ -51,7 +56,11 @@ class MagShuffle(object):
         res_shape = res.shape
         shuff_indices = np.arange(res_shape[-1]*res_shape[-2])
         np.random.shuffle(shuff_indices)
-        for c in [0,1,2]:
+        if self.n_c_shuffle < 3:
+            cs = np.random.choice(3, size=self.n_c_shuffle, replace=False)
+        else:
+            cs = [0,1,2]
+        for c in cs:
             c_vals = res[c]
             c_shape = c_vals.shape
             c_vals = c_vals.flatten()
