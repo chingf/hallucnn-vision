@@ -6,7 +6,39 @@ def to_pair(input):
         return input[:2]
     else:
         return input, input
+
+class AllShuffle(object):
+    r"""
+    Shuffles phase info of image
+    """
+    def __init__(self):
+        pass
+        
+    def __call__(self, tensor):
+        
+        y = torch.fft.rfft2(tensor)
+
+        res = np.real(y)
+        ims = np.imag(y)
+        ims_shape = ims.shape
+        shuff_indices = np.arange(ims_shape[-1]*ims_shape[-2])
+        np.random.shuffle(shuff_indices)
+        for c in [0,1,2]:
+            im_vals = ims[c]
+            im_shape = im_vals.shape
+            im_vals = im_vals.flatten()
+            im_vals = im_vals[shuff_indices]
+            res_vals = res[c]
+            res_vals = res_vals.flatten()
+            res_vals = res_vals[shuff_indices]
+            ims[c] = im_vals.reshape(im_shape)
+            res[c] = res_vals.reshape(im_shape)
+        new_image = res +ims*1j
+        return torch.fft.irfft2(new_image) 
     
+    def __repr__(self):
+        return self.__class__.__name__ 
+
 class PhaseShuffle(object):
     r"""
     Shuffles phase info of image
