@@ -1,7 +1,5 @@
+import sys
 import os
-os.environ["CUDA_DEVICE_ORDER"]="PCI_BUS_ID"
-os.environ["CUDA_VISIBLE_DEVICES"]="0"
-
 import torch
 import torchvision.transforms as transforms
 from   torchvision.datasets import ImageNet
@@ -9,38 +7,70 @@ from   datetime import datetime
 import torch.optim as optim
 import torch.nn as nn
 import gc
+import shortuuid
+import pickle
 
 import numpy as np
 from   utils import AddGaussianNoise, AddSaltPepperNoise
 from   timm.models import efficientnet_b0
 from   peff_b0 import PEffN_b0SeparateHP_V1
 
-from torch.utils.tensorboard import SummaryWriter
+import tensorboard
+
+if os.environ['USER'] == 'jwl2182':
+    user = 'jwl'
+else:
+    user = 'cf'
+
+if user == 'cf':
+    from torch.utils.tensorboard import SummaryWriter
+
+########################
+## ARGS 
+########################
+job_idx = int(sys.argv[1]) # 0-3
+TASK_NAME = str(sys.argv[2]) # pnet
+CKPT_EPOCH = 49
+
+########################
+## GPU management 
+########################
+batch_size = 32
+try:
+    n_gpus = (len(os.environ['CUDA_VISIBLE_DEVICES'])+1)/2
+except:
+    n_gpus = 0
+#if n_gpus > 1:
+#    device_num = str(job_idx % n_gpus)
+#    my_env = os.environ
+#    my_env["CUDA_VISIBLE_DEVICES"] = device_num
+my_env = os.environ
+my_env["CUDA_VISIBLE_DEVICES"] = str(job_idx)
 
 ########################
 ## GLOBAL CONFIGURATIONS
 ########################
+if user == 'jwl':
+    dataset_root = '/mnt/smb/locker/issa-locker/imagenet/'
+    ckpt_root = '../hcnn-vision-files/checkpoints/'
+else:
+    dataset_root = '/mnt/smb/locker/issa-locker/imagenet/'
+    ckpt_root = '../hcnn-vision-files/checkpoints/'
+
 TRAIN_MEAN = [0.485, 0.456, 0.406]
 TRAIN_STD  = [0.229, 0.224, 0.225]
-dataset_root = '../datasets/imagenet'
+if CKPT_EPOCH >= 100:
+    ckpt_str = CKPT_EPOCH
+else:
+    ckpt_str = f'0{CKPT_EPOCH}'
+WEIGHT_PATTERN_N = f'{ckpt_root}{TASK_NAME}/pnet_pretrained_pc*_{ckpt_str}.pth'
+LOG_DIR = '../hps/'
+LR_SCALE = 0.1
+os.makedirs(f'{LOG_DIR}', exist_ok=True)
 
 #total training epoches
-EPOCH = 8
-
-SAME_PARAM = False           # to use the same parameters for all pcoders or not
-FF_START = True             # to start from feedforward initialization
+EPOCH = 45
 MAX_TIMESTEP = 5
-
-#tensorboard log dir
-LOG_DIR = '../tensorboards/' + f'runs_train_hps_{MAX_TIMESTEP}ts'
-if FF_START:
-    LOG_DIR += '_ff_start'
-if not SAME_PARAM:
-    LOG_DIR += '_sep'
-LOG_DIR += '_imagenet'
-
-TASK_NAME = 'pefb0_v1n'
-WEIGHT_PATTERN_N = '../weights/PEffNetB0/pnetn_pretrained_pc*.pth'
 
 #time of we run the script
 TIME_NOW = datetime.now().isoformat()
@@ -48,7 +78,7 @@ TIME_NOW = datetime.now().isoformat()
 ########################
 ########################
 
-def evaluate(net, epoch, dataloader, timesteps, writer=None, tag='Clean'):
+def evaluate(net, epoch, dataloader, timesteps, writer=None, picklewriter=None, tag='Clean'):
     test_loss = np.zeros((timesteps+1,))
     correct   = np.zeros((timesteps+1,))
     for (images, labels) in dataloader:
@@ -61,7 +91,6 @@ def evaluate(net, epoch, dataloader, timesteps, writer=None, tag='Clean'):
                     outputs = net(images)
                 else:
                     outputs = net()
-            
                 loss = loss_function(outputs, labels)
                 test_loss[tt] += loss.item()
                 _, preds = outputs.max(1)
@@ -78,9 +107,11 @@ def evaluate(net, epoch, dataloader, timesteps, writer=None, tag='Clean'):
         ))
         if writer is not None:
             writer.add_scalar(f"{tag}Perf/Epoch#{epoch}", correct[tt], tt)
+        if picklewriter is not None:
+            picklewriter.append([f"{tag}Perf/Epoch#{epoch}", correct[tt], tt])
     print()
 
-def train(net, epoch, dataloader, timesteps, writer=None):
+def train(net, epoch, dataloader, timesteps, writer=None, picklewriter=None):
     for batch_index, (images, labels) in enumerate(dataloader):
         net.reset()
 
@@ -105,22 +136,30 @@ def train(net, epoch, dataloader, timesteps, writer=None):
         optimizer.step()
         net.update_hyperparameters()
             
-        print(f"Training Epoch: {epoch} [{batch_index * 16 + len(images)}/{len(dataloader.dataset)}]\tLoss: {loss.item():0.4f}\tLR: {optimizer.param_groups[0]['lr']:0.6f}")
+        print(f"Training Epoch: {epoch} [{batch_index * batch_size + len(images)}/{len(dataloader.dataset)}]\tLoss: {loss.item():0.4f}\tLR: {optimizer.param_groups[0]['lr']:0.6f}")
         for tt in range(timesteps+1):
             print(f'{ttloss[tt]:0.4f}\t', end='')
         print()
         if writer is not None:
             writer.add_scalar(f"TrainingLoss/CE", loss.item(), (epoch-1)*len(dataloader) + batch_index)
+        if picklewriter is not None:
+            picklewriter.append([f"TrainingLoss/CE", loss.item(), (epoch-1)*len(dataloader) + batch_index])
 
-def load_pnet(net, weight_pattern, build_graph, random_init, ff_multiplier, fb_multiplier, er_multiplier, same_param, device='cuda:0'):
+def load_pnet(
+    net, weight_pattern, build_graph, random_init,
+    ff_multiplier, fb_multiplier, er_multiplier, same_param, device='cuda:0'
+    ):
+
     if same_param:
         raise Exception('Not implemented!')
     else:
-        pnet = PEffN_b0SeparateHP_V1(net, build_graph=build_graph, random_init=random_init, ff_multiplier=ff_multiplier, fb_multiplier=fb_multiplier, er_multiplier=er_multiplier)
-
+        pnet = PEffN_b0SeparateHP_V1(
+            net, build_graph=build_graph, random_init=random_init,
+            ff_multiplier=ff_multiplier, fb_multiplier=fb_multiplier, er_multiplier=er_multiplier)
 
     for pc in range(pnet.number_of_pcoders):
         pc_dict = torch.load(weight_pattern.replace('*',f'{pc+1}'), map_location='cpu')
+        pc_dict = pc_dict['pcoderweights']
         if 'C_sqrt' not in pc_dict:
             pc_dict['C_sqrt'] = torch.tensor(-1, dtype=torch.float)
         getattr(pnet, f'pcoder{pc+1}').load_state_dict(pc_dict)
@@ -129,136 +168,170 @@ def load_pnet(net, weight_pattern, build_graph, random_init, ff_multiplier, fb_m
     pnet.to(device)
     return pnet
 
-def log_hyper_parameters(net, epoch, sumwriter, same_param=True):
-    if same_param:
-        sumwriter.add_scalar(f"HyperparamRaw/feedforward", getattr(net,f'ff_part').item(), epoch)
-        sumwriter.add_scalar(f"HyperparamRaw/feedback",    getattr(net,f'fb_part').item(), epoch)
-        sumwriter.add_scalar(f"HyperparamRaw/error",       getattr(net,f'errorm').item(), epoch)
-        sumwriter.add_scalar(f"HyperparamRaw/memory",      getattr(net,f'mem_part').item(), epoch)
-
-        sumwriter.add_scalar(f"Hyperparam/feedforward", getattr(net,f'ffm').item(), epoch)
-        sumwriter.add_scalar(f"Hyperparam/feedback",    getattr(net,f'fbm').item(), epoch)
-        sumwriter.add_scalar(f"Hyperparam/error",       getattr(net,f'erm').item(), epoch)
-        sumwriter.add_scalar(f"Hyperparam/memory",      1-getattr(net,f'ffm').item()-getattr(net,f'fbm').item(), epoch)
-    else:
+def log_hyper_parameters(net, epoch, sumwriter=None, picklewriter=None):
+    if sumwriter is not None:
         for i in range(1, net.number_of_pcoders+1):
-            sumwriter.add_scalar(f"Hyperparam/pcoder{i}_feedforward", getattr(net,f'ffm{i}').item(), epoch)
+            sumwriter.add_scalar(
+                f"Hyperparam/pcoder{i}_feedforward", getattr(net,f'ffm{i}').item(), epoch)
             if i < net.number_of_pcoders:
-                sumwriter.add_scalar(f"Hyperparam/pcoder{i}_feedback", getattr(net,f'fbm{i}').item(), epoch)
+                sumwriter.add_scalar(
+                    f"Hyperparam/pcoder{i}_feedback", getattr(net,f'fbm{i}').item(), epoch)
             else:
-                sumwriter.add_scalar(f"Hyperparam/pcoder{i}_feedback", 0, epoch)
-            sumwriter.add_scalar(f"Hyperparam/pcoder{i}_error", getattr(net,f'erm{i}').item(), epoch)
+                sumwriter.add_scalar(
+                    f"Hyperparam/pcoder{i}_feedback", 0, epoch)
+            sumwriter.add_scalar(
+                f"Hyperparam/pcoder{i}_error", getattr(net,f'erm{i}').item(), epoch)
             if i < net.number_of_pcoders:
-                sumwriter.add_scalar(f"Hyperparam/pcoder{i}_memory",      1-getattr(net,f'ffm{i}').item()-getattr(net,f'fbm{i}').item(), epoch)
+                sumwriter.add_scalar(
+                    f"Hyperparam/pcoder{i}_memory",
+                    1-getattr(net,f'ffm{i}').item()-getattr(net,f'fbm{i}').item(), epoch)
             else:
-                sumwriter.add_scalar(f"Hyperparam/pcoder{i}_memory",      1-getattr(net,f'ffm{i}').item(), epoch)
+                sumwriter.add_scalar(
+                    f"Hyperparam/pcoder{i}_memory", 1-getattr(net,f'ffm{i}').item(), epoch)
+    if picklewriter is not None:
+        for i in range(1, net.number_of_pcoders+1):
+            picklewriter.append([
+                f"Hyperparam/pcoder{i}_feedforward", getattr(net,f'ffm{i}').item(), epoch])
+            if i < net.number_of_pcoders:
+                picklewriter.append([
+                    f"Hyperparam/pcoder{i}_feedback", getattr(net,f'fbm{i}').item(), epoch])
+            else:
+                picklewriter.append([f"Hyperparam/pcoder{i}_feedback", 0, epoch])
+            picklewriter.append([
+                f"Hyperparam/pcoder{i}_error", getattr(net,f'erm{i}').item(), epoch])
+            if i < net.number_of_pcoders:
+                picklewriter.append([
+                    f"Hyperparam/pcoder{i}_memory",
+                    1-getattr(net,f'ffm{i}').item()-getattr(net,f'fbm{i}').item(), epoch])
+            else:
+                picklewriter.append([
+                    f"Hyperparam/pcoder{i}_memory", 1-getattr(net,f'ffm{i}').item(), epoch])
 
-all_noises = [
-            "gaussian_noise",
-            "impulse_noise",
-            "none"]
+all_noises = ["gaussian_noise", "impulse_noise", "none"]
 noise_gens = [
     [
         AddGaussianNoise(std=0.50),
-        AddGaussianNoise(std=0.75),
         AddGaussianNoise(std=1.00),
-        AddGaussianNoise(std=1.25),
         AddGaussianNoise(std=1.50),
     ],
     [
         AddSaltPepperNoise(probability=0.05),
-        AddSaltPepperNoise(probability=0.1),
         AddSaltPepperNoise(probability=0.15),
-        AddSaltPepperNoise(probability=0.2),
         AddSaltPepperNoise(probability=0.3),
     ],
     [None],
 ]
 
+args = []
 for nt_idx, noise_type in enumerate(all_noises):
     for ng_idx, noise_gen in enumerate(noise_gens[nt_idx]):
-        print(noise_gen)
-        start = datetime.now()
-        
-        noise_level = 0
-        transform_clean = [
-            transforms.Resize(224),
-            transforms.CenterCrop(224),
-            transforms.ToTensor(),
-        ]
-        transform_noise = transform_clean[:]
+        args.append([nt_idx, noise_type, ng_idx, noise_gen])
+split_args = np.array_split(args, n_gpus)
+job_args = split_args[job_idx]
+for job_arg in job_args:
+    nt_idx, noise_type, ng_idx, noise_gen = job_arg
+    print(noise_gen)
+    start = datetime.now()
+    
+    noise_level = 0
+    transform_clean = [
+        transforms.Resize(224),
+        transforms.CenterCrop(224),
+        transforms.ToTensor(),
+    ]
+    transform_noise = transform_clean[:]
 
-        transform_clean.append(transforms.Normalize(mean=TRAIN_MEAN, std=TRAIN_STD))
-        transform_noise.append(transforms.Normalize(mean=TRAIN_MEAN, std=TRAIN_STD))
+    transform_clean.append(transforms.Normalize(mean=TRAIN_MEAN, std=TRAIN_STD))
+    transform_noise.append(transforms.Normalize(mean=TRAIN_MEAN, std=TRAIN_STD))
 
-        if noise_gen is not None:
-            noise_level = ng_idx + 1
-            transform_noise.append(noise_gen)
+    if noise_gen is not None:
+        noise_level = ng_idx + 1
+        transform_noise.append(noise_gen)
 
-        clean_ds     = ImageNet(dataset_root, split='val', download=False, transform=transforms.Compose(transform_clean))
-        clean_loader = torch.utils.data.DataLoader(clean_ds,  batch_size=16, shuffle=False, drop_last=False, num_workers=8)
+    np.random.seed(0)
+    subset_indices = np.random.choice(1281167, size=30000, replace=False)
+    np.random.seed()
+    clean_ds = ImageNet(dataset_root, split='train', transform=transforms.Compose(transform_clean))
+    clean_subset = torch.utils.data.Subset(clean_ds, subset_indices)
+    clean_loader = torch.utils.data.DataLoader(
+        clean_subset, batch_size=batch_size, shuffle=False, drop_last=False, num_workers=4)
+    noise_ds = ImageNet(dataset_root, split='train', transform=transforms.Compose(transform_noise))
+    noise_subset = torch.utils.data.Subset(noise_ds, subset_indices)
+    noise_loader = torch.utils.data.DataLoader(
+        noise_subset, batch_size=batch_size, shuffle=True, drop_last=False, num_workers=4)
 
-        noise_ds     = ImageNet(dataset_root, split='val', download=False, transform=transforms.Compose(transform_noise))
-        noise_loader = torch.utils.data.DataLoader(noise_ds,  batch_size=16, shuffle=True, drop_last=False, num_workers=8)
+    if False: #user == 'cf': # For now, don't use SummaryWriter
+        sumwriter = SummaryWriter(
+            f'{LOG_DIR}{TASK_NAME}_type_{noise_type}_lvl_{noise_level}',
+            filename_suffix=f'_{noise_type}_{noise_level}')
+        picklewriter = None
+    else:
+        sumwriter = None
+        textwriter_dir = f'{LOG_DIR}{TASK_NAME}/{noise_type}_lvl_{noise_level}/'
+        os.makedirs(textwriter_dir, exist_ok=True)
+        unique_id = shortuuid.uuid()
+        picklewriter = []
+        picklewriter_file = f'{textwriter_dir}{LR_SCALE}x_{unique_id}.p'
+    
+    backward_weight_patter = WEIGHT_PATTERN_N
 
-            
-        sumwriter = SummaryWriter(f'{LOG_DIR}/net_{TASK_NAME}_type_{noise_type}_lvl_{noise_level}', filename_suffix=f'_{noise_type}_{noise_level}')
-        
-        backward_weight_patter = WEIGHT_PATTERN_N
+    # feedforward for baseline
+    print(datetime.now() - start)
+    loss_function = nn.CrossEntropyLoss()
+    net = efficientnet_b0(pretrained=True)
+    pnet = load_pnet(net, backward_weight_patter,
+        build_graph=True, random_init=False, ff_multiplier=0.33,
+        fb_multiplier=0.33, er_multiplier=0.0, same_param=False, device='cuda:0')
 
-        # feedforward for baseline
-        net = efficientnet_b0(pretrained=True)
-        pnet_fw = load_pnet(net, backward_weight_patter,
-            build_graph=False, random_init=(not FF_START), ff_multiplier=1.0, fb_multiplier=0.0, er_multiplier=0.0, same_param=SAME_PARAM, device='cuda:0')
-        
-        loss_function = nn.CrossEntropyLoss()
-        evaluate(pnet_fw, 0, noise_loader, timesteps=1, writer=sumwriter, tag='FeedForward')
+    loss_function = nn.CrossEntropyLoss()
+    hyperparams = [*pnet.get_hyperparameters()]
+    fffbmem_hp = []
+    erm_hp = []
+    for pc in range(pnet.number_of_pcoders):
+        fffbmem_hp.extend(hyperparams[pc*4:pc*4+3])
+        erm_hp.append(hyperparams[pc*4+3])
+    optimizer = optim.Adam([
+        {'params': fffbmem_hp, 'lr':0.01*LR_SCALE},
+        {'params': erm_hp, 'lr':0.0001*LR_SCALE}], weight_decay=0.00001)
+
+    log_hyper_parameters(pnet, 0, sumwriter, picklewriter)
+    hps = pnet.get_hyperparameters_values()
+    print(hps)
+
+    evaluate(
+        pnet, 0, noise_loader, timesteps=MAX_TIMESTEP,
+        writer=sumwriter, picklewriter=picklewriter, tag='Noisy')
+    print(datetime.now() - start)
+    for epoch in range(1, EPOCH+1):
+        train(
+            pnet, epoch, noise_loader, timesteps=MAX_TIMESTEP,
+            writer=sumwriter, picklewriter=picklewriter)
         print(datetime.now() - start)
-        del pnet_fw
-        gc.collect()
+        log_hyper_parameters(pnet, epoch, sumwriter, picklewriter)
 
-        # train hps
-        net = efficientnet_b0(pretrained=True)
-        pnet = load_pnet(net, backward_weight_patter,
-            build_graph=True, random_init=(not FF_START), ff_multiplier=0.33, fb_multiplier=0.33, er_multiplier=0.0, same_param=SAME_PARAM, device='cuda:0')
-
-        loss_function = nn.CrossEntropyLoss()
-        hyperparams = [*pnet.get_hyperparameters()]
-        if SAME_PARAM:
-            optimizer = optim.Adam([
-                {'params': hyperparams[:-1], 'lr':0.01},
-                {'params': hyperparams[-1:], 'lr':0.0001}], weight_decay=0.00001)
-        else:
-            fffbmem_hp = []
-            erm_hp = []
-            for pc in range(pnet.number_of_pcoders):
-                fffbmem_hp.extend(hyperparams[pc*4:pc*4+3])
-                erm_hp.append(hyperparams[pc*4+3])
-            optimizer = optim.Adam([
-                {'params': fffbmem_hp, 'lr':0.01},
-                {'params': erm_hp, 'lr':0.0001}], weight_decay=0.00001)
-
-        log_hyper_parameters(pnet, 0, sumwriter, same_param=SAME_PARAM)
         hps = pnet.get_hyperparameters_values()
         print(hps)
 
-        evaluate(pnet, 0, noise_loader, timesteps=MAX_TIMESTEP, writer=sumwriter, tag='Noisy')
+        evaluate(
+            pnet, epoch, noise_loader, timesteps=MAX_TIMESTEP,
+            writer=sumwriter, picklewriter=picklewriter, tag='Noisy')
+        if picklewriter is not None:
+            with open(picklewriter_file, 'wb') as f:
+                pickle.dump(picklewriter, f)
         print(datetime.now() - start)
-        for epoch in range(1, EPOCH+1):
-            train(pnet, epoch, noise_loader, timesteps=MAX_TIMESTEP, writer=sumwriter)
-            print(datetime.now() - start)
-            log_hyper_parameters(pnet, epoch, sumwriter, same_param=SAME_PARAM)
 
-            hps = pnet.get_hyperparameters_values()
-            print(hps)
-
-            evaluate(pnet, epoch, noise_loader, timesteps=MAX_TIMESTEP, writer=sumwriter, tag='Noisy')
-            print(datetime.now() - start)
-
-        evaluate(pnet, epoch, clean_loader, timesteps=MAX_TIMESTEP, writer=sumwriter, tag='Clean')
-        
+    evaluate(
+        pnet, epoch, clean_loader, timesteps=MAX_TIMESTEP,
+        writer=sumwriter, picklewriter=picklewriter, tag='Clean')
+    
+    if sumwriter is not None:
         sumwriter.close()
 
-        del pnet
-        gc.collect()
-        print(datetime.now() - start)
+    if picklewriter is not None:
+        with open(picklewriter_file, 'wb') as f:
+            pickle.dump(picklewriter, f)
+
+    del pnet
+    gc.collect()
+    print(datetime.now() - start)
+
