@@ -23,20 +23,45 @@ import socket
 import gc
 
 from timm.models import efficientnet_b0
+from utils import AddGaussianNoise, AddSaltPepperNoise
+from utils import MagShuffle, PhaseShuffle, AllShuffle
 from peff_b0 import PEffN_b0SeparateHP_V1
+
+########################
+## ARGS 
+########################
+TASK_NAME = str(sys.argv[1]) # pnet
+if len(sys.argv>2):
+    EXTRA_TRANSFORM = str(sys.argv[2]) # None
+else:
+    EXTRA_TRANSFORM = None
 
 ################################################
 #       Global configs
 ################################################
-
+TRAIN_MEAN = [0.485, 0.456, 0.406]
+TRAIN_STD  = [0.229, 0.224, 0.225]
 engram_dir = '/mnt/smb/locker/abbott-locker/hcnn_vision/'
 NUMBER_OF_PCODERS = 8
-transform_val = transforms.Compose([ # Dataset and train-test helpers
+transform_chain = [
     transforms.Resize(224),
     transforms.CenterCrop(224),
     transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-])
+    transforms.Normalize(mean=TRAIN_MEAN, std=TRAIN_STD)]
+if EXTRA_TRANSFORM != None:
+    if EXTRA_TRANSFORM == 'noisy':
+        transform_chain.append(AddGaussianNoise(std=1.50))
+    elif EXTRA_TRANSFORM == 'elastic':
+        transform_chain.append(transforms.ElasticTransform(alpha=250., sigma=4.))
+    elif EXTRA_TRANSFORM == 'magshuffle':
+        transform_chain.append(MagShuffle(n_c_shuffle=2))
+    elif EXTRA_TRANSFORM == 'phaseshuffle':
+        transform_chain.append(PhaseShuffle(n_c_shuffle=2))
+    elif EXTRA_TRANSFORM == 'allshuffle':
+        transform_chain.append(AllShuffle())
+    else:
+        raise ValueError('Unclear transform specification.')
+transform_val = transforms.Compose(transform_chain)
 data_root = '/mnt/smb/locker/abbott-locker/hcnn_vision/imagenet/'
 
 def get_open_port():
@@ -65,7 +90,7 @@ class Args():
         self.num_gpus = 3
         self.start_epoch = 1
 
-        self.task_name =  'pnet3'       #dir_name
+        self.task_name =  TASK_NAME       #dir_name
         self.extra_stuff_you_want_to_add_to_tb = ''
         self.log_dir = f'{engram_dir}tensorboard/{self.task_name}/'       #tensorboard logdir
         self.pth_dir = f'{engram_dir}checkpoints/{self.task_name}/'       #ckpt dir
