@@ -67,7 +67,7 @@ else:
     engram_dir = '/mnt/smb/locker/abbott-locker/hcnn_vision/'
     dataset_root = f'{engram_dir}imagenet/'
     ckpt_root = f'{engram_dir}checkpoints/'
-    LOG_DIR = f'{engram_dir}hps/'
+    LOG_DIR = f'{engram_dir}hyperparams/'
 os.makedirs(LOG_DIR, exist_ok=True)
 TRAIN_MEAN = [0.485, 0.456, 0.406]
 TRAIN_STD  = [0.229, 0.224, 0.225]
@@ -256,7 +256,6 @@ def train_and_eval(gpu, mp_args):
         {'params': erm_hp, 'lr':0.0001*LR_SCALE}], weight_decay=0.00001)
 
     # Set up transforms
-    noise_level = 0
     transform_clean = [
         transforms.Resize(224),
         transforms.CenterCrop(224),
