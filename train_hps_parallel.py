@@ -54,7 +54,7 @@ CKPT_EPOCH = int(sys.argv[2]) # 49
 ########################
 ## GLOBAL CONFIGURATIONS
 ########################
-batch_size = 11 # Effect size 32
+batch_size = 11 # Effective size 32
 try:
     n_gpus = int((len(os.environ['CUDA_VISIBLE_DEVICES'])+1)/2)
 except:
