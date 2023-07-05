@@ -13,25 +13,27 @@ from torch.utils.tensorboard import SummaryWriter
 import numpy as np
 
 import os
+import sys
 import time
 from contextlib import closing
 from torch.utils.data import DataLoader
 from torch.utils.data import Subset
+from torchvision.models.resnet import resnet18 as ResNet
+from torchvision.models import ResNet18_Weights
 import torch.multiprocessing as mp
 import torch.distributed as dist
 import socket
 import gc
 
-from timm.models import efficientnet_b0
 from utils import AddGaussianNoise, AddSaltPepperNoise
 from utils import MagShuffle, PhaseShuffle, AllShuffle
-from peff_b0 import PEffN_b0SeparateHP_V1
+from presnet import PResNet18V3NSeparateHP
 
 ########################
 ## ARGS 
 ########################
 TASK_NAME = str(sys.argv[1]) # pnet
-if len(sys.argv>2):
+if len(sys.argv)>2:
     EXTRA_TRANSFORM = str(sys.argv[2]) # None
 else:
     EXTRA_TRANSFORM = None
@@ -41,8 +43,8 @@ else:
 ################################################
 TRAIN_MEAN = [0.485, 0.456, 0.406]
 TRAIN_STD  = [0.229, 0.224, 0.225]
-engram_dir = '/mnt/smb/locker/abbott-locker/hcnn_vision/'
-NUMBER_OF_PCODERS = 8
+engram_dir = '/mnt/smb/locker/abbott-locker/hcnn_vision_resnet/'
+NUMBER_OF_PCODERS = 5
 transform_chain = [
     transforms.Resize(224),
     transforms.CenterCrop(224),
@@ -87,11 +89,10 @@ class Args():
         self.batchsize = 80                        #batchsize for training
         self.num_workers = 4                       #number of workers
         self.num_epochs = 100                       #number of epochs
-        self.num_gpus = 3
+        self.num_gpus = 4
         self.start_epoch = 1
 
-        self.task_name =  TASK_NAME       #dir_name
-        self.extra_stuff_you_want_to_add_to_tb = ''
+        self.task_name = TASK_NAME       #dir_name
         self.log_dir = f'{engram_dir}tensorboard/{self.task_name}/'       #tensorboard logdir
         self.pth_dir = f'{engram_dir}checkpoints/{self.task_name}/'       #ckpt dir
 
@@ -102,9 +103,8 @@ class Args():
 
         # optional
         self.resume = None                         #resuming the training 
-        #path to the checkpoints. Should be a list of len equal to NUMBER_OF_PCODERS
-        self.resume_ckpts= [f"../weights/PEffNetB0/pnet_pretrained_pc{x+1}_001.pth" for x in range(8)]
-
+        self.resume_ckpts= [f"../weights/presnet/pnet_pretrained_pc{x+1}_001.pth"\
+            for x in range(NUMBER_OF_PCODERS)]
 
 def train_pcoders(
     net, epoch, loss_function, optimizer, writer, train_loader, args, verbose=True
@@ -200,10 +200,10 @@ def train_and_eval(gpu, mp_args):
     torch.cuda.set_device(gpu)
 
     # Load network
-    net = efficientnet_b0(pretrained=True)
-    print("Loaded EffB0")
-    pnet = PEffN_b0SeparateHP_V1(net, build_graph=True, random_init=False)
-    print("Loaded Predictive-EffB0")
+    resnet = ResNet(weights=ResNet18_Weights.IMAGENET1K_V1)
+    print("Loaded ResNet")
+    pnet = PResNet18V3NSeparateHP(resnet, build_graph=True)
+    print("Loaded PResNet")
     pnet.cuda()
 
     # Distributed data parallel
@@ -243,7 +243,6 @@ def train_and_eval(gpu, mp_args):
         optimizer_text += f"lr          :{optimizer.defaults['lr']} \n"
         optimizer_text += f"batchsize   :{args.batchsize} \n"
         optimizer_text += f"weight_decay:{args.weight_decay} \n"
-        optimizer_text += f"{args.extra_stuff_you_want_to_add_to_tb}"
         sumwriter.add_text('Parameters', optimizer_text, 0)
     
     # Train loops

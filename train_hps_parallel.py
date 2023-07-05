@@ -3,6 +3,8 @@ import os
 import torch
 import torchvision.transforms as transforms
 from   torchvision.datasets import ImageNet
+from torchvision.models.resnet import resnet18 as ResNet
+from torchvision.models import ResNet18_Weights
 from   datetime import datetime
 import torch.optim as optim
 import torch.nn as nn
@@ -17,16 +19,9 @@ import gc
 
 import numpy as np
 from   utils import AddGaussianNoise, AddSaltPepperNoise
-from   timm.models import efficientnet_b0
-from   peff_b0 import PEffN_b0SeparateHP_V1
+from presnet import PResNet18V3NSeparateHP
 import tensorboard
-if os.environ['USER'] == 'jwl2182':
-    user = 'jwl'
-else:
-    user = 'cf'
-
-if user == 'cf':
-    from torch.utils.tensorboard import SummaryWriter
+from torch.utils.tensorboard import SummaryWriter
 
 def get_open_port():
     with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as s:
@@ -54,20 +49,14 @@ CKPT_EPOCH = int(sys.argv[2]) # 49
 ########################
 ## GLOBAL CONFIGURATIONS
 ########################
-batch_size = 11 # Effective size 32
 try:
     n_gpus = int((len(os.environ['CUDA_VISIBLE_DEVICES'])+1)/2)
 except:
     raise ValueError('GPUs needed')
-if user == 'jwl':
-    dataset_root = '/mnt/smb/locker/issa-locker/imagenet/'
-    ckpt_root = '../hcnn-vision-files/checkpoints/'
-    LOG_DIR = '../hps/'
-else:
-    engram_dir = '/mnt/smb/locker/abbott-locker/hcnn_vision/'
-    dataset_root = f'{engram_dir}imagenet/'
-    ckpt_root = f'{engram_dir}checkpoints/'
-    LOG_DIR = f'{engram_dir}hyperparams/'
+engram_dir = '/mnt/smb/locker/abbott-locker/hcnn_vision_resnet/'
+dataset_root = '/mnt/smb/locker/abbott-locker/hcnn_vision/imagenet/'
+ckpt_root = f'{engram_dir}checkpoints/'
+LOG_DIR = f'{engram_dir}hyperparams/'
 os.makedirs(LOG_DIR, exist_ok=True)
 TRAIN_MEAN = [0.485, 0.456, 0.406]
 TRAIN_STD  = [0.229, 0.224, 0.225]
@@ -76,6 +65,7 @@ WEIGHT_PATTERN_N += f'pnet_pretrained_pc*_{CKPT_EPOCH:03d}.pth'
 LR_SCALE = 0.1
 EPOCH = 45 # Total training epochs
 MAX_TIMESTEP = 5
+batch_size = 48//n_gpus
 
 ########################
 ########################
@@ -156,17 +146,16 @@ def train(
 
 def load_pnet(
     net, weight_pattern, build_graph, random_init,
-    ff_multiplier, fb_multiplier, er_multiplier, same_param, device='cuda:0'
+    ff_multiplier, fb_multiplier, er_multiplier, device='cuda:0'
     ):
 
-    if same_param:
-        raise Exception('Not implemented!')
-    else:
-        pnet = PEffN_b0SeparateHP_V1(
-            net, build_graph=build_graph, random_init=random_init,
-            ff_multiplier=ff_multiplier, fb_multiplier=fb_multiplier,
-            er_multiplier=er_multiplier)
+    # Initialize PNet
+    pnet = PResNet18V3NSeparateHP(
+        net, build_graph=build_graph, random_init=random_init,
+        ff_multiplier=ff_multiplier, fb_multiplier=fb_multiplier,
+        er_multiplier=er_multiplier)
 
+    # Load pcoder weights
     for pc in range(pnet.number_of_pcoders):
         pc_dict = torch.load(
             weight_pattern.replace('*',f'{pc+1}'), map_location='cpu')
@@ -175,6 +164,15 @@ def load_pnet(
             pc_dict['C_sqrt'] = torch.tensor(-1, dtype=torch.float)
         getattr(pnet, f'pcoder{pc+1}').load_state_dict(pc_dict)
 
+    # Set initial hyperparameters
+    hyperparams = []
+    for i in range(1, 6):
+        hps = {}
+        hps['ffm'] = ff_multiplier
+        hps['fbm'] = fb_multiplier
+        hps['erm'] = er_multiplier
+        hyperparams.append(hps)
+    pnet.set_hyperparameters(hyperparams)
     pnet.eval()
     pnet.to(device)
     return pnet
@@ -231,11 +229,14 @@ def train_and_eval(gpu, mp_args):
     torch.cuda.set_device(gpu)
 
     # Load network
-    net = efficientnet_b0(pretrained=True)
-    pnet = load_pnet( # TODO: random hyperparam initialization
+    net = ResNet(weights=ResNet18_Weights.IMAGENET1K_V1)
+    ffm = np.random.uniform()
+    fbm = np.random.uniform(high=1.-ffm)
+    erm = np.random.uniform()*0.1
+    pnet = load_pnet(
         net, WEIGHT_PATTERN_N,
-        build_graph=True, random_init=False, ff_multiplier=0.33,
-        fb_multiplier=0.33, er_multiplier=0.0, same_param=False)
+        build_graph=True, random_init=False, ff_multiplier=ffm,
+        fb_multiplier=fbm, er_multiplier=erm)
     pnet.cuda()
 
     # Distributed data parallel network
@@ -267,48 +268,51 @@ def train_and_eval(gpu, mp_args):
 
     # Set up data
     np.random.seed(0)
-    subset_indices = np.random.choice(1281167, size=30000, replace=False)
+    all_indices = np.arange(1281167)
+    np.random.shuffle(all_indices)
+    train_indices = all_indices[:30000]
+    valid_indices = all_indices[30000:40000]
     np.random.seed()
     print('Loading ImageNet')
     noise_ds = ImageNet(
         dataset_root, split='train',
         transform=transforms.Compose(transform_noise))
-    noise_subset = torch.utils.data.Subset(noise_ds, subset_indices)
-    del noise_ds
-    gc.collect()
+    train_subset = torch.utils.data.Subset(noise_ds, train_indices)
+    train_sampler = torch.utils.data.distributed.DistributedSampler(
+        train_subset, num_replicas=n_gpus, rank=gpu)
+    train_loader = torch.utils.data.DataLoader(
+        train_subset, batch_size=batch_size,
+        drop_last=False, num_workers=4, sampler=train_sampler)
     print('ImageNet Loaded.')
-    noise_sampler = torch.utils.data.distributed.DistributedSampler(
-        noise_subset, num_replicas=n_gpus, rank=gpu)
-    noise_loader = torch.utils.data.DataLoader(
-        noise_subset, batch_size=batch_size,
-        drop_last=False, num_workers=4, sampler=noise_sampler)
 
     # Initial logging set up and step
     if gpu == 0:
-        # TODO: set up proper validation dataset
-        print('STILL NEED TO SET UP PROPER VALID SET')
+        valid_subset = torch.utils.data.Subset(noise_ds, valid_indices)
+        valid_sampler = torch.utils.data.distributed.DistributedSampler(
+            valid_subset, num_replicas=n_gpus, rank=gpu)
+        valid_loader = torch.utils.data.DataLoader(
+            valid_subset, batch_size=batch_size,
+            drop_last=False, num_workers=4, sampler=valid_sampler)
 
-        if False: #user == 'cf': # For now, don't use SummaryWriter
-            sumwriter = SummaryWriter(
-                    f'{LOG_DIR}{TASK_NAME}_type_{noise_type}_lvl_{noise_level}',
-                    filename_suffix=f'_{noise_type}_{noise_level}')
-            picklewriter = None
-        else:
-            sumwriter = None
-            textwriter_dir = f'{LOG_DIR}{TASK_NAME}/{noise_type}_lvl_{noise_level}/'
-            os.makedirs(textwriter_dir, exist_ok=True)
-            unique_id = shortuuid.uuid()
-            picklewriter = []
-            picklewriter_file = f'{textwriter_dir}{LR_SCALE}x_{unique_id}.p'
+        sumwriter = None
+        textwriter_dir = f'{LOG_DIR}{TASK_NAME}/{noise_type}_lvl_{noise_level}/'
+        os.makedirs(textwriter_dir, exist_ok=True)
+        unique_id = shortuuid.uuid()
+        picklewriter = []
+        picklewriter_file = f'{textwriter_dir}{LR_SCALE}x_{unique_id}.p'
 
         log_hyper_parameters(pnet, 0, sumwriter, picklewriter)
         hps = pnet.get_hyperparameters_values()
         print(hps)
         evaluate(
-            ddpnet, pnet, 0, noise_loader, MAX_TIMESTEP,
+            ddpnet, pnet, 0, valid_loader, MAX_TIMESTEP,
             loss_function, sumwriter, picklewriter, tag='Noisy')
     else:
         sumwriter = picklewriter = None
+
+    # Delete full train dataset
+    del noise_ds
+    gc.collect()
 
     # Train/eval loop
     start = datetime.now()
@@ -316,7 +320,7 @@ def train_and_eval(gpu, mp_args):
         if gpu == 0:
             print(f'====== TRAIN EPOCH {epoch} =====')
         train(
-            ddpnet, pnet, epoch, noise_loader, MAX_TIMESTEP,
+            ddpnet, pnet, epoch, train_loader, MAX_TIMESTEP,
             loss_function, optimizer, gpu, sumwriter, picklewriter)
         if gpu == 0:
             print(datetime.now() - start)
@@ -326,7 +330,7 @@ def train_and_eval(gpu, mp_args):
             print('Hyperparameters:')
             print(hps)
             evaluate(
-                ddpnet, pnet, epoch, noise_loader, MAX_TIMESTEP,
+                ddpnet, pnet, epoch, valid_loader, MAX_TIMESTEP,
                 loss_function, sumwriter, picklewriter, tag='Noisy')
             if picklewriter is not None:
                 with open(picklewriter_file, 'wb') as f:

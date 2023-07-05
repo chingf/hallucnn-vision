@@ -1,11 +1,13 @@
 #########################
-# In this script we train p-EfficientNets on ImageNet
+# In this script we train p-ResNet on ImageNet
 # We use the pretrained model and only train feedback connections.
 # This uses data parallelization across multiple GPUs.
 #########################
 import torch
 import torchvision.transforms as transforms
 from torchvision.datasets import ImageNet
+from torchvision.models.resnet import resnet18 as ResNet
+from torchvision.models import ResNet18_Weights
 
 import torch.nn as nn
 import torch.optim as optim
@@ -15,14 +17,13 @@ import numpy as np
 import os
 import time
 
-from timm.models import efficientnet_b0
-from peff_b0 import PEffN_b0SeparateHP_V1
+from presnet import PResNet18V3NSeparateHP
 
 ################################################
 #       Global configs
 ################################################
 
-engram_dir = '/mnt/smb/locker/abbott-locker/hcnn_vision/'
+engram_dir = '/mnt/smb/locker/abbott-locker/hcnn_vision_resnet/'
 
 class Args():
 
@@ -33,7 +34,7 @@ class Args():
         self.num_epochs = 100                       #number of epochs
         self.start_epoch = 1
 
-        self.task_name =  'pnet2'       #dir_name
+        self.task_name =  'pnet'       #dir_name
         self.extra_stuff_you_want_to_add_to_tb = ''
         self.log_dir = f'{engram_dir}tensorboard/{self.task_name}/'       #tensorboard logdir
         self.pth_dir = f'{engram_dir}checkpoints/{self.task_name}/'       #ckpt dir
@@ -45,11 +46,11 @@ class Args():
 
         # optional
         self.resume = None                         #resuming the training 
-        self.resume_ckpts= [f"../weights/PEffNetB0/pnet_pretrained_pc{x+1}_001.pth" for x in range(8)]                     #path to the checkpoints. Should be a list of len equal to NUMBER_OF_PCODERS
+        self.resume_ckpts= [f"../weights/PResNet/pnet_pretrained_pc{x+1}_001.pth" for x in range(8)]                     #path to the checkpoints. Should be a list of len equal to NUMBER_OF_PCODERS
 
 
 args = Args()
-NUMBER_OF_PCODERS = 8
+NUMBER_OF_PCODERS = 5
 
 if args.random_seed:
     np.random.seed(args.random_seed)
@@ -62,18 +63,16 @@ os.makedirs(args.pth_dir, exist_ok=True)
 ################################################
 #          Net , optimizers
 ################################################
-net = efficientnet_b0(pretrained=True)
-print("Loaded EffB0")
-pnet = PEffN_b0SeparateHP_V1(net, build_graph=True, random_init=False)
-print("Loaded Predictive-EffB0")
+resnet = ResNet(weights=ResNet18_Weights.IMAGENET1K_V1)
+print("Loaded ResNet")
+pnet = PResNet18V3NSeparateHP(resnet, build_graph=True)
+print("Loaded PResNet")
 pnet.cuda()
 
-
 loss_function = nn.MSELoss()
-optimizer = optim.RMSprop([{'params':getattr(pnet,f"pcoder{x+1}").pmodule.parameters()} for x in range(NUMBER_OF_PCODERS)],
-                        lr=args.lr,
-                        weight_decay=args.weight_decay
-                    )
+optimizer = optim.RMSprop(
+    [{'params':getattr(pnet,f"pcoder{x+1}").pmodule.parameters()} for x in range(NUMBER_OF_PCODERS)],
+    lr=args.lr, weight_decay=args.weight_decay)
 scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer,T_0=3)
 
 ################################################
@@ -88,13 +87,19 @@ transform_val = transforms.Compose([
 ])
 
 data_root = '/mnt/smb/locker/abbott-locker/hcnn_vision/imagenet/'
-print('Loading train ds')
-train_ds     = ImageNet(data_root, split='train', transform=transform_val)
-train_loader = torch.utils.data.DataLoader(train_ds,  batch_size=args.batchsize, shuffle=True, drop_last=False,num_workers=args.num_workers,pin_memory=True)
 
 print('Loading val ds')
 val_ds     = ImageNet(data_root, split='val', transform=transform_val)
-val_loader = torch.utils.data.DataLoader(val_ds,  batch_size=args.batchsize, shuffle=True, drop_last=False,num_workers=args.num_workers,pin_memory=True)
+val_loader = torch.utils.data.DataLoader(
+    val_ds,  batch_size=args.batchsize, shuffle=True, drop_last=False,
+    num_workers=args.num_workers,pin_memory=True)
+
+print('Loading train ds')
+train_ds     = ImageNet(data_root, split='train', transform=transform_val)
+train_loader = torch.utils.data.DataLoader(
+    train_ds, batch_size=args.batchsize, shuffle=True, drop_last=False,
+    num_workers=args.num_workers,pin_memory=True)
+
 
 def train_pcoders(net, epoch, writer,train_loader,verbose=True):
 
