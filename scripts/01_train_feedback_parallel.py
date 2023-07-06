@@ -3,6 +3,9 @@
 # We use the pretrained model and only train feedback connections.
 # This uses data parallelization across multiple GPUs.
 #########################
+import sys
+sys.path.insert(0, '..')
+
 import torch
 import torchvision.transforms as transforms
 from torchvision.datasets import ImageNet
