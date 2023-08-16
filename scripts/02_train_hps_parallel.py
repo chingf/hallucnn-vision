@@ -45,7 +45,7 @@ def cleanup():
 ## ARGS 
 ########################
 TASK_NAME = str(sys.argv[1]) # pnet
-CKPT_EPOCH = int(sys.argv[2]) # 49
+CKPT_EPOCH = int(sys.argv[2]) # 99
 
 ########################
 ## GLOBAL CONFIGURATIONS
@@ -365,10 +365,29 @@ if __name__ == '__main__':
     # For each noise combo, run parallelized hyperparameter training
     for nt_idx, noise_type in enumerate(all_noises):
         for ng_idx, noise_gen in enumerate(noise_gens[nt_idx]):
-            mp_args = {}
-            mp_args['noise_type'] = noise_type
-            mp_args['noise_gen'] = noise_gen
-            mp_args['noise_level'] = ng_idx + 1
-            mp_args['free_port'] = free_port
-            mp.spawn(train_and_eval, nprocs=n_gpus, args=(mp_args,))
+            max_iters = 3
+            n_tboards = 0
+            size_threshold_bytes = 800 * 1024 # 800 KB
+            net_dir = f'{LOG_DIR}{TASK_NAME}/{noise_type}_lvl_{ng_idx+1}/'
+            if os.path.isdir(net_dir):
+                for tboard in os.listdir(net_dir):
+                    tboard_filepath = os.path.join(net_dir, tboard)
+                    if os.path.isfile(tboard_filepath):
+                        file_size = os.path.getsize(tboard_filepath)
+                        if file_size > size_threshold_bytes:
+                            n_tboards += 1
+            n_iters = max(0, max_iters-n_tboards)
+           
+            print("==========================================")
+            print(TASK_NAME)
+            print(f'{noise_type}, lvl {ng_idx+1} will run {n_iters} iterations.')
+            print("==========================================")
+
+            for _ in range(n_iters):
+                mp_args = {}
+                mp_args['noise_type'] = noise_type
+                mp_args['noise_gen'] = noise_gen
+                mp_args['noise_level'] = ng_idx + 1
+                mp_args['free_port'] = free_port
+                mp.spawn(train_and_eval, nprocs=n_gpus, args=(mp_args,))
 

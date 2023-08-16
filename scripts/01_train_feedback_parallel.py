@@ -27,6 +27,7 @@ import torch.multiprocessing as mp
 import torch.distributed as dist
 import socket
 import gc
+import re
 
 from utils import AddGaussianNoise, AddSaltPepperNoise
 from utils import MagShuffle, PhaseShuffle, AllShuffle
@@ -93,7 +94,6 @@ class Args():
         self.num_workers = 4                       #number of workers
         self.num_epochs = 100                       #number of epochs
         self.num_gpus = 4
-        self.start_epoch = 1
 
         self.task_name = TASK_NAME       #dir_name
         self.log_dir = f'{engram_dir}tensorboard/{self.task_name}/'       #tensorboard logdir
@@ -207,6 +207,30 @@ def train_and_eval(gpu, mp_args):
     print("Loaded ResNet")
     pnet = PResNet18V3NSeparateHP(resnet, build_graph=True)
     print("Loaded PResNet")
+
+    # Load from checkpoints
+    start_epoch = 0
+    pth_files = os.listdir(args.pth_dir)
+    checkpoints_available = np.any([p.startswith('pnet_pretrained') for p in pth_files])
+    if checkpoints_available:
+        chckpt_epochs = [0]
+        regex = f'pnet_pretrained_pc1_(\d+).pth'
+        for chckpt_file in pth_files:
+            m = re.search(regex, chckpt_file)
+            if m is not None: chckpt_epochs.append(int(m.group(1)))
+        max_chckpt_epoch = max(chckpt_epochs)
+        if max_chckpt_epoch > 0:
+            start_epoch = max_chckpt_epoch
+            print(f'LOADING network {TASK_NAME}-{start_epoch}')
+            for pc in range(pnet.number_of_pcoders):
+                pc_dict = torch.load(
+                    f'{args.pth_dir}pnet_pretrained_pc{pc+1}_{start_epoch:03d}.pth',
+                    map_location='cpu')
+                pc_dict = pc_dict['pcoderweights']
+                if 'C_sqrt' not in pc_dict:
+                    pc_dict['C_sqrt'] = torch.tensor(-1, dtype=torch.float)
+                getattr(pnet, f'pcoder{pc+1}').load_state_dict(pc_dict)
+    pnet.eval()
     pnet.cuda()
 
     # Distributed data parallel
@@ -249,7 +273,7 @@ def train_and_eval(gpu, mp_args):
         sumwriter.add_text('Parameters', optimizer_text, 0)
     
     # Train loops
-    for epoch in range(args.start_epoch, args.num_epochs):
+    for epoch in range(start_epoch, args.num_epochs):
         print(f'Training epoch {epoch}')
         writer = sumwriter if gpu == 0 else None
         train_pcoders(
